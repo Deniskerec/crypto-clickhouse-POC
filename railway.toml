@@ -1,0 +1,13 @@
+[project]
+name = "crypto-clickhouse-poc"
+
+[services.api]
+# Web service (gets a public URL)
+start = "uvicorn api.server:app --host 0.0.0.0 --port $PORT"
+env = { PYTHONUNBUFFERED = "1" }
+
+[services.collector]
+# Background worker for Binance → ClickHouse ingestion
+start = "python -m src.collector"
+restartPolicyType = "on_failure"
+env = { PYTHONUNBUFFERED = "1" }
