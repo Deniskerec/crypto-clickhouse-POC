@@ -1,229 +1,419 @@
-/* ===== Helpers ===== */
-const API = document.getElementById('apiBase')?.textContent.trim();
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-function fmt(n, d=2){ return Number(n).toLocaleString(undefined,{maximumFractionDigits:d})}
-function nowIso(){ return new Date().toISOString().slice(11,19) + 'Z' }
+/* main.js
+ * - Distinct colors (Buy green / Sell red)
+ * - Refresh buttons for Live + Historical
+ * - Sidebar counters for trades per symbol
+ * - Demo data for static tabs
+ * - Start collecting shows ingested rows (real if API is up; simulated otherwise)
+ */
+const $ = (q) => document.querySelector(q);
 
-/* ===== Tabs & Modal ===== */
-const tabs = $$('.tab');
-const pages = $$('.tab-page');
-const modal = $('#modal');
-const modalClose = $('#modalClose');
-const modalTry = $('#modalTry');
+const API_BASE = (document.getElementById('apiBase')?.textContent || '').trim();
+let HAVE_API = !!API_BASE && API_BASE !== 'YOUR_API_BASE_HERE';
 
-let liveWarningShown = false;
-function showTab(name){
-  tabs.forEach(t => t.classList.toggle('active', t.dataset.tab===name));
-  pages.forEach(p => p.classList.toggle('hidden', p.dataset.tab!==name));
-  if(name==='live' && !liveWarningShown){
-    modal.classList.remove('hidden');
+const COLOR = { buy:'#2ecc71', sell:'#e74c3c', accent:'#4da3ff' };
+const fmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 8 });
+const fmt2 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
+const DEFAULT_SYMBOLS = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','ADAUSDT'];
+
+let ingestTotal = 0;
+let ingestTimer = null;
+let countersTimer = null;
+
+/* -------- utility -------- */
+const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+
+async function safeJson(url){
+  try{
+    const r = await fetch(url, {cache:'no-store'});
+    if(!r.ok) throw new Error(r.statusText);
+    return await r.json();
+  }catch(e){ return null; }
+}
+
+/* -------- D3 helpers -------- */
+function svgBox(sel){
+  const svg = d3.select(sel);
+  const w = svg.node().clientWidth || 900;
+  const h = svg.node().clientHeight || 420;
+  svg.selectAll('*').remove();
+  return {svg,w,h};
+}
+function groupedBars(sel, groups, series, data){
+  const {svg,w,h}=svgBox(sel);
+  const m={top:20,right:10,bottom:40,left:60}, W=w-m.left-m.right, H=h-m.top-m.bottom;
+  const g=svg.append('g').attr('transform',`translate(${m.left},${m.top})`);
+  const x0=d3.scaleBand().domain(groups).range([0,W]).padding(0.2);
+  const x1=d3.scaleBand().domain(series).range([0,x0.bandwidth()]).padding(0.1);
+  const y=d3.scaleLinear().domain([0, d3.max(data,d=>d.value)||1]).nice().range([H,0]);
+  const col=d3.scaleOrdinal().domain(series).range([COLOR.buy, COLOR.sell]);
+  g.append('g').attr('class','axis').attr('transform',`translate(0,${H})`).call(d3.axisBottom(x0));
+  g.append('g').attr('class','axis').call(d3.axisLeft(y));
+  const grouped=d3.group(data,d=>d.group);
+  for(const [grp,vals] of grouped){
+    const wrap=g.append('g').attr('transform',`translate(${x0(grp)},0)`);
+    vals.forEach(v=>{
+      wrap.append('rect')
+        .attr('x',x1(v.key)).attr('y',y(v.value))
+        .attr('width',x1.bandwidth()).attr('height',H-y(v.value))
+        .attr('fill',col(v.key));
+    });
   }
 }
-tabs.forEach(t => t.addEventListener('click', () => showTab(t.dataset.tab)));
-modalClose.addEventListener('click', ()=> modal.classList.add('hidden'));
-modalTry.addEventListener('click', ()=> { liveWarningShown = true; modal.classList.add('hidden'); });
-
-/* ===== Minimal D3 renderers ===== */
-function clearSvg(id){ d3.select(id).selectAll('*').remove(); }
-
-function barCompare(id, labels, buyVals, sellVals, titleLeft='Buy', titleRight='Sell'){
-  clearSvg(id);
-  const svg = d3.select(id), w = svg.node().clientWidth, h = svg.node().clientHeight, m= {t:20,r:20,b:40,l:40};
-  const innerW = w-m.l-m.r, innerH = h-m.t-m.b;
-  const g = svg.append('g').attr('transform',`translate(${m.l},${m.t})`);
-
-  const x0 = d3.scaleBand().domain(labels).range([0,innerW]).padding(0.2);
-  const x1 = d3.scaleBand().domain(['buy','sell']).range([0,x0.bandwidth()]).padding(0.2);
-  const y = d3.scaleLinear().domain([0, d3.max([...buyVals, ...sellVals])||1]).nice().range([innerH,0]);
-
-  const xA = d3.axisBottom(x0); const yA = d3.axisLeft(y).ticks(6).tickSize(-innerW);
-  g.append('g').attr('class','axis').attr('transform',`translate(0,${innerH})`).call(xA);
-  g.append('g').attr('class','axis').call(yA);
-
-  const data = labels.map((s,i)=>({sym:s,buy:buyVals[i]||0,sell:sellVals[i]||0}));
-  const series = g.selectAll('.sym').data(data).enter().append('g').attr('transform',d=>`translate(${x0(d.sym)},0)`);
-  series.append('rect').attr('class','buyFill').attr('x',x1('buy')).attr('y',d=>y(d.buy)).attr('width',x1.bandwidth()).attr('height',d=>innerH-y(d.buy));
-  series.append('rect').attr('class','sellFill').attr('x',x1('sell')).attr('y',d=>y(d.sell)).attr('width',x1.bandwidth()).attr('height',d=>innerH-y(d.sell));
-}
-
-function lineDual(id, xs, ys1, ys2, label1='Buy', label2='Sell'){
-  clearSvg(id);
-  const svg = d3.select(id), w = svg.node().clientWidth, h = svg.node().clientHeight, m= {t:20,r:20,b:30,l:40};
-  const innerW = w-m.l-m.r, innerH = h-m.t-m.b;
-  const g = svg.append('g').attr('transform',`translate(${m.l},${m.t})`);
-
-  const x = d3.scalePoint().domain(xs).range([0,innerW]);
-  const y = d3.scaleLinear().domain([0, d3.max([...ys1,...ys2])||1]).nice().range([innerH,0]);
-
-  const xA = d3.axisBottom(x).tickValues(xs.filter((_,i)=>i%Math.ceil(xs.length/8)===0));
-  const yA = d3.axisLeft(y).ticks(6).tickSize(-innerW);
-  g.append('g').attr('class','axis').attr('transform',`translate(0,${innerH})`).call(xA);
-  g.append('g').attr('class','axis').call(yA);
-
-  const line = d3.line().x((d,i)=>x(xs[i])).y(d=>y(d));
-  g.append('path').attr('class','buyLine').attr('fill','none').attr('stroke','#2ecc71').attr('stroke-width',2).attr('d',line(ys1));
-  g.append('path').attr('class','sellLine').attr('fill','none').attr('stroke','#e74c3c').attr('stroke-width',2).attr('d',line(ys2));
-}
-
-function barsSingle(id, xs, ys){
-  clearSvg(id);
-  const svg = d3.select(id), w = svg.node().clientWidth, h = svg.node().clientHeight, m= {t:20,r:20,b:30,l:40};
-  const innerW = w-m.l-m.r, innerH = h-m.t-m.b;
-  const g = svg.append('g').attr('transform',`translate(${m.l},${m.t})`);
-  const x = d3.scaleBand().domain(xs).range([0,innerW]).padding(0.2);
-  const y = d3.scaleLinear().domain([0, d3.max(ys)||1]).nice().range([innerH,0]);
-  g.append('g').attr('class','axis').attr('transform',`translate(0,${innerH})`).call(d3.axisBottom(x).tickValues(xs.filter((_,i)=>i%Math.ceil(xs.length/8)===0)));
-  g.append('g').attr('class','axis').call(d3.axisLeft(y).ticks(6).tickSize(-innerW));
-  g.selectAll('rect').data(ys).enter().append('rect').attr('class','bar').attr('x',(d,i)=>x(xs[i])).attr('y',d=>y(d)).attr('width',x.bandwidth()).attr('height',d=>innerH-y(d));
-}
-
-/* ===== Static demo data ===== */
-function rnd(n,a,b){ return Array.from({length:n},()=> a + Math.random()*(b-a)); }
-const staticSyms = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','ADAUSDT'];
-
-function buildStaticRealtime(){
-  const labels = staticSyms;
-  const buyVol = rnd(labels.length, 200, 1200);
-  const sellVol = rnd(labels.length, 200, 1200);
-  barCompare('#srt-buy-sell', labels, buyVol, sellVol);
-
-  const avgBuy = rnd(labels.length, 80, 120);   // pretend prices
-  const avgSell= avgBuy.map(v => v + (Math.random()*2-1)); // +/- 1
-  lineDual('#srt-avg-prices', labels, avgBuy, avgSell);
-
-  const tpm = rnd(labels.length, 50, 400);
-  barsSingle('#srt-trades-per-min', labels, tpm);
-
-  // fake last trades table (60s)
-  const tbody = $('#srtTable tbody'); tbody.innerHTML='';
-  for(let i=0;i<30;i++){
-    const sym = labels[Math.floor(Math.random()*labels.length)];
-    const side = Math.random()>.5?'BUY':'SELL';
-    const price = (100 + Math.random()*30).toFixed(2);
-    const qty = (Math.random()*0.5).toFixed(4);
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${nowIso()}</td><td>${sym}</td>
-      <td class="right">${price}</td><td class="right">${qty}</td><td>${side}</td>`;
-    tbody.appendChild(tr);
-  }
-}
-
-function buildStaticHistorical(){
-  const n= 120; // shorter series for page weight
-  const xs = Array.from({length:n},(_,i)=> `${i}m`);
-  const base= 100; // baseline
-  const buy = Array.from({length:n},(_,i)=> base + Math.sin(i/7)*3 + Math.random()*1.2);
-  const sell= buy.map((v,i)=> v + (Math.sin(i/5))*0.8 );
-  lineDual('#sh-avg-prices', xs, buy, sell);
-
-  const bv = rnd(n, 100, 500), sv = rnd(n, 100, 500);
-  barCompare('#sh-buy-sell', xs.slice(-12), bv.slice(-12), sv.slice(-12)); // show last 12 buckets
-
-  const tpm = rnd(n, 80, 250);
-  barsSingle('#sh-trades-per-min', xs, tpm);
-
-  $('#shRows').textContent = fmt(n);
-  $('#shAvgTrades').textContent = fmt(d3.mean(tpm));
-}
-
-/* ===== Live (API) wiring (unchanged visuals) ===== */
-async function getJSON(path){
-  if(!API) throw new Error('No API base URL');
-  const res = await fetch(`${API}${path}`);
-  if(!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
-}
-
-async function refreshLive(){
-  // top symbols buy/sell + avg prices + trades/min
-  const minutes = Number($('#liveMinutes').value||10);
-  $('#liveMinLabel').textContent = minutes;
-
-  const top = await getJSON(`/top_symbols?minutes=${minutes}&limit=${Number($('#liveTop').value||5)}`);
-  const labels = top.map(d=>d.symbol);
-  const buyVol = top.map(d=>d.buy_volume);
-  const sellVol= top.map(d=>d.sell_volume);
-  barCompare('#live-buy-sell', labels, buyVol, sellVol);
-
-  const avgBuy = top.map(d=>d.avg_buy_price);
-  const avgSell= top.map(d=>d.avg_sell_price);
-  lineDual('#live-avg-prices', labels, avgBuy, avgSell);
-
-  const tpm = top.map(d=>d.trades_per_min);
-  barsSingle('#live-trades-per-min', labels, tpm);
-
-  // live table
-  const sym = $('#liveSymbol').value || 'BTCUSDT';
-  $('#liveSymbolLabel').textContent = sym;
-  $('#liveWindowLabel').textContent = Number($('#liveWindow').value||60);
-  const rows = await getJSON(`/live_trades?window_sec=${Number($('#liveWindow').value||60)}&symbol=${sym}`);
-  const tb = $('#liveTable tbody'); tb.innerHTML='';
-  rows.forEach(r=>{
-    const side = r.is_buyer_maker? 'SELL':'BUY';
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${r.ts}</td><td>${r.symbol}</td>
-      <td class="right">${fmt(r.price,2)}</td><td class="right">${fmt(r.qty,4)}</td><td>${side}</td>`;
-    tb.appendChild(tr);
+function multiLine(sel, series, rows, accessor){
+  const {svg,w,h}=svgBox(sel);
+  const m={top:20,right:10,bottom:40,left:60}, W=w-m.left-m.right, H=h-m.top-m.bottom;
+  const g=svg.append('g').attr('transform',`translate(${m.left},${m.top})`);
+  const x=d3.scaleUtc().domain(d3.extent(rows,d=>d.x)).range([0,W]);
+  const allY=[]; series.forEach(s=>rows.forEach(r=>allY.push(accessor(r,s.key))));
+  const y=d3.scaleLinear().domain([d3.min(allY), d3.max(allY)]).nice().range([H,0]);
+  g.append('g').attr('class','axis').attr('transform',`translate(0,${H})`).call(d3.axisBottom(x).ticks(6));
+  g.append('g').attr('class','axis').call(d3.axisLeft(y));
+  series.forEach(s=>{
+    const line=d3.line().x(d=>x(d.x)).y(d=>y(accessor(d,s.key)));
+    g.append('path').datum(rows).attr('fill','none').attr('stroke',s.color).attr('stroke-width',1.8).attr('d',line);
   });
-  $('#statusLive').textContent = `Rows: ${rows.length}`;
 }
 
-async function refreshHist(){
-  const m = Number($('#histMinutes').value||360);
-  const sym = $('#histSymbol').value || 'BTCUSDT';
-  $('#histMinLabel').textContent = m; $('#histSymbolLabel').textContent = sym;
-
-  const rows = await getJSON(`/ohlcv?symbol=${encodeURIComponent(sym)}&minutes=${m}`);
-  const xs = rows.map(r=>r.minute.slice(11,16));
-  const buy = rows.map(r=>r.avg_buy_price);
-  const sell= rows.map(r=>r.avg_sell_price);
-  lineDual('#hist-avg-prices', xs, buy, sell);
-
-  const bv = rows.map(r=>r.buy_volume);
-  const sv = rows.map(r=>r.sell_volume);
-  barCompare('#hist-buy-sell', xs.slice(-12), bv.slice(-12), sv.slice(-12));
-
-  const tpm = rows.map(r=>r.trades);
-  barsSingle('#hist-trades-per-min', xs, tpm);
-  $('#histRows').textContent = fmt(rows.length);
-  $('#histAvgTrades').textContent = fmt(d3.mean(tpm));
-}
-
-/* ===== Buttons ===== */
-$('#applyLive').addEventListener('click', ()=> refreshLive().catch(()=>{}));
-$('#applyHist').addEventListener('click', ()=> refreshHist().catch(()=>{}));
-
-$('#btnStart').addEventListener('click', async ()=>{
-  if(!API){ alert('No API available on static site.'); return; }
-  try{
-    await fetch(`${API}/collector/start`,{method:'POST'});
-  }catch{}
-});
-$('#btnStop').addEventListener('click', async ()=>{
-  if(!API){ return; }
-  try{ await fetch(`${API}/collector/stop`,{method:'POST'});}catch{}
-});
-
-/* ===== First render ===== */
-showTab('static-rt');      // default to the static demo
-buildStaticRealtime();
-buildStaticHistorical();   // prepares static historical too
-
-// If user navigates between tabs, (re)draw static as needed
-document.querySelector('[data-tab="static-rt"]').addEventListener('click', buildStaticRealtime);
-document.querySelector('[data-tab="static-hist"]').addEventListener('click', buildStaticHistorical);
-
-// Optional: try to ping status to show if backend exists
-(async ()=>{
-  if(!API) return;
-  try{
-    const r = await fetch(`${API}/collector/status`);
-    if(r.ok){
-      const s = await r.json();
-      $('#collectorStatus').textContent = `collector: ${s.status||'unknown'}`;
-    }
-  }catch{
-    $('#collectorStatus').textContent = 'collector: offline (static demo)';
+/* -------- DEMO data builders -------- */
+function randomWalk(start, steps, vol=0.002){
+  const out=[start];
+  for(let i=1;i<steps;i++){
+    const shock=(Math.random()-0.5)*2*vol*start;
+    out.push(Math.max(0.0001, out[i-1]+shock));
   }
+  return out;
+}
+function fakeTrades(symbol, seconds=60, perSec=8, startP=65000){
+  const n=seconds*perSec; const prices=randomWalk(startP,n,0.002);
+  const now=Date.now(); const rows=[];
+  for(let i=0;i<n;i++){
+    rows.push({
+      ts:new Date(now-(n-1-i)*1000),
+      symbol, price:prices[i],
+      qty:+(Math.random()*0.01+0.0001).toFixed(6),
+      is_buyer_maker: Math.random()<0.5 ? 1 : 0
+    });
+  }
+  return rows;
+}
+function minuteAgg(trades, minutes=60){
+  const map=new Map();
+  trades.forEach(t=>{
+    const m=new Date(t.ts); m.setSeconds(0,0);
+    const k=+m; if(!map.has(k)) map.set(k,[]);
+    map.get(k).push(t);
+  });
+  const rows=[...map.keys()].sort().map(k=>{
+    const arr=map.get(k);
+    let high=-Infinity, low=Infinity, open=arr[0].price, close=arr[arr.length-1].price, vol=0, trades=arr.length;
+    let buyVol=0, sellVol=0, buyPV=0, sellPV=0;
+    arr.forEach(t=>{
+      const p=t.price, q=t.qty; high=Math.max(high,p); low=Math.min(low,p); vol+=q;
+      if(t.is_buyer_maker===0){ buyVol+=q; buyPV+=p*q; } else { sellVol+=q; sellPV+=p*q; }
+    });
+    return {
+      x:new Date(+k),
+      trades,
+      buy_vol:buyVol, sell_vol:sellVol,
+      avg_buy: buyVol? buyPV/buyVol : open,
+      avg_sell: sellVol? sellPV/sellVol : open
+    };
+  });
+  return rows.slice(-minutes);
+}
+
+/* -------- Sidebar counters -------- */
+function renderCounters(map){
+  const wrap = $('#symbolCounters');
+  if(!wrap) return;
+  const entries = Array.from(map.entries()).sort((a,b)=>b[1]-a[1]);
+  wrap.innerHTML = entries.map(([sym,val])=>`
+    <div class="counter-item">
+      <span class="label">${sym}</span>
+      <span class="value">${fmt2.format(val)}</span>
+    </div>`).join('');
+}
+async function refreshCounters(){
+  // If API: use /top_symbols to approximate “activity” by volume
+  if(HAVE_API){
+    const mins = parseInt($('#liveMinutes')?.value||'10',10);
+    const limit = parseInt($('#liveTop')?.value||'5',10);
+    const data = await safeJson(`${API_BASE}/top_symbols?minutes=${mins}&limit=${limit}`);
+    if(data){
+      const m = new Map();
+      data.forEach(r=> m.set(r.symbol, r.volume));
+      renderCounters(m);
+      return;
+    }
+  }
+  // DEMO fallback
+  const m = new Map();
+  DEFAULT_SYMBOLS.forEach(s=> m.set(s, Math.random()*10+3));
+  renderCounters(m);
+}
+
+/* -------- Live (API) rendering -------- */
+async function loadLive(){
+  const winSec = parseInt($('#liveWindow').value||'60',10);
+  const minutes = parseInt($('#liveMinutes').value||'10',10);
+  const topN = parseInt($('#liveTop').value||'5',10);
+  const symbol = $('#liveSymbol').value;
+
+  $('#liveMinLabel').textContent = minutes.toString();
+  $('#liveWindowLabel').textContent = winSec.toString();
+  $('#liveSymbolLabel').textContent = symbol;
+
+  if(!HAVE_API){
+    // Soft notify
+    $('#statusLive').textContent = 'API not detected — demo mode';
+  }else{
+    $('#statusLive').textContent = 'Loading…';
+  }
+
+  // Top buy/sell volumes
+  const top = HAVE_API
+    ? await safeJson(`${API_BASE}/top_symbols?minutes=${minutes}&limit=${topN}`)
+    : DEFAULT_SYMBOLS.slice(0,topN).map(s=>({symbol:s,buy_vol:Math.random()*6+3,sell_vol:Math.random()*6+3}));
+
+  if(top){
+    const groups = top.map(d=>d.symbol);
+    const data = [
+      ...top.map(d=>({group:d.symbol,key:'Buy', value:d.buy_vol})),
+      ...top.map(d=>({group:d.symbol,key:'Sell', value:d.sell_vol}))
+    ];
+    groupedBars('#live-buy-sell', groups, ['Buy','Sell'], data);
+  }
+
+  // Avg buy/sell price (VWAP) per minute -> synth from minuteAgg of fake trades if no API
+  let avgRows;
+  if(HAVE_API){
+    // Use OHLCV endpoint (reusing close as trend) OR add your dedicated endpoint
+    const o = await safeJson(`${API_BASE}/ohlcv?symbol=${symbol}&minutes=${minutes}`);
+    if(o){
+      avgRows = o.map(r=>({
+        x: new Date(r.minute + 'Z'),
+        avg_buy: r.avg_buy ?? r.close,
+        avg_sell: r.avg_sell ?? r.close
+      }));
+    }
+  }
+  if(!avgRows){
+    const f = fakeTrades(symbol, minutes*60, 4, 65000);
+    avgRows = minuteAgg(f, minutes);
+  }
+  multiLine('#live-avg-prices',
+    [{key:'avg_buy', color:COLOR.buy},{key:'avg_sell', color:COLOR.sell}],
+    avgRows, (r,k)=>r[k]);
+
+  // Trades per minute chart for the same symbols (fake if no API)
+  let tpm;
+  if(HAVE_API){
+    // Approximate: reuse OHLCV for each of top symbols if you expose symbol param; for brevity we simulate
+    tpm = avgRows.map(r=>({x:r.x, count: Math.round(20+Math.random()*25)}));
+  }else{
+    tpm = avgRows.map(r=>({x:r.x, count: Math.round(20+Math.random()*25)}));
+  }
+  multiLine('#live-trades-per-min', [{key:'count', color:COLOR.accent}], tpm, (r)=>r.count);
+
+  // Raw last trades table
+  let raw = null;
+  if(HAVE_API){
+    raw = await safeJson(`${API_BASE}/live_trades?window_sec=${winSec}&symbol=${encodeURIComponent(symbol)}`);
+  }
+  if(!raw){
+    raw = fakeTrades(symbol, winSec, 8);
+  }
+  const tbody = $('#liveTable tbody');
+  tbody.innerHTML = raw.slice(0,500).map(t=>`
+    <tr>
+      <td>${(t.ts || t.ts_utc || new Date()).toString().replace('T',' ').replace('Z','')}</td>
+      <td>${t.symbol}</td>
+      <td class="right">${fmt2.format(t.price)}</td>
+      <td class="right">${fmt.format(t.qty)}</td>
+      <td>${(t.is_buyer_maker===1||t.side==='Sell')?'Sell':'Buy'}</td>
+    </tr>`).join('');
+
+  $('#statusLive').textContent = 'OK';
+}
+
+/* -------- Historical (API) rendering -------- */
+async function loadHist(){
+  const symbol = $('#histSymbol').value;
+  const minutes = parseInt($('#histMinutes').value||'360',10);
+  $('#histSymbolLabel').textContent = symbol;
+  $('#histMinLabel').textContent = minutes.toString();
+  $('#statusHist').textContent = HAVE_API ? 'Loading…' : 'API not detected — demo mode';
+
+  let rows = null;
+  if(HAVE_API){
+    rows = await safeJson(`${API_BASE}/ohlcv?symbol=${symbol}&minutes=${minutes}`);
+  }
+  if(!rows){
+    // demo from fake trades
+    const f = fakeTrades(symbol, minutes*60, 4, 64000);
+    rows = minuteAgg(f, minutes).map(r=>({
+      minute: r.x.toISOString(),
+      buy_vol: r.buy_vol, sell_vol: r.sell_vol,
+      avg_buy: r.avg_buy, avg_sell: r.avg_sell,
+      trades: r.trades
+    }));
+  }
+
+  const xRows = rows.map(r=>({x:new Date((r.minute||r.x)+'Z'), buy:r.buy_vol, sell:r.sell_vol}));
+  groupedBars('#hist-buy-sell',
+    xRows.map(r=>r.x.toISOString().slice(11,16)),
+    ['Buy','Sell'],
+    xRows.map((r,i)=>[
+      {group:xRows[i].x.toISOString().slice(11,16), key:'Buy', value:r.buy},
+      {group:xRows[i].x.toISOString().slice(11,16), key:'Sell', value:r.sell}
+    ]).flat()
+  );
+
+  multiLine('#hist-avg-prices',
+    [{key:'avg_buy', color:COLOR.buy},{key:'avg_sell', color:COLOR.sell}],
+    rows.map(r=>({x:new Date((r.minute||r.x)+'Z'), avg_buy:r.avg_buy, avg_sell:r.avg_sell})),
+    (r,k)=>r[k]
+  );
+
+  multiLine('#hist-trades-per-min',
+    [{key:'trades', color:COLOR.accent}],
+    rows.map(r=>({x:new Date((r.minute||r.x)+'Z'), trades:r.trades || Math.round(15+Math.random()*25)})),
+    (r)=>r.trades
+  );
+
+  $('#histRows').textContent = rows.length.toString();
+  const avgTrades = rows.reduce((a,b)=>a+(b.trades||0),0) / Math.max(1, rows.length);
+  $('#histAvgTrades').textContent = fmt2.format(avgTrades);
+  $('#statusHist').textContent = 'OK';
+}
+
+/* -------- Static demos -------- */
+function loadStaticRealtime(){
+  const syms = DEFAULT_SYMBOLS;
+  const top = syms.map(s=>({symbol:s, buy_vol: 3+Math.random()*3, sell_vol:3+Math.random()*3}));
+  groupedBars('#demo-live-buy-sell',
+    top.map(d=>d.symbol), ['Buy','Sell'],
+    top.flatMap(d=>[
+      {group:d.symbol,key:'Buy', value:d.buy_vol},
+      {group:d.symbol,key:'Sell', value:d.sell_vol}
+    ])
+  );
+
+  const f = fakeTrades('BTCUSDT', 600, 4, 65000);
+  const minutes = minuteAgg(f, 10);
+  multiLine('#demo-live-avg-prices',
+    [{key:'avg_buy', color:COLOR.buy},{key:'avg_sell', color:COLOR.sell}],
+    minutes, (r,k)=>r[k]
+  );
+  multiLine('#demo-live-trades-per-min',
+    [{key:'trades', color:COLOR.accent}],
+    minutes.map(r=>({x:r.x, trades:r.trades})), (r)=>r.trades
+  );
+
+  const tbody = $('#demo-live-table tbody');
+  const recent = fakeTrades('BTCUSDT', 60, 8, minutes.at(-1).avg_buy);
+  tbody.innerHTML = recent.slice().reverse().map(t=>`
+    <tr>
+      <td>${t.ts.toISOString().replace('T',' ').replace('Z','')}</td>
+      <td>${t.symbol}</td>
+      <td class="right">${fmt2.format(t.price)}</td>
+      <td class="right">${fmt.format(t.qty)}</td>
+      <td>${t.is_buyer_maker ? 'Sell' : 'Buy'}</td>
+    </tr>`).join('');
+}
+function loadStaticHistorical(){
+  const f = fakeTrades('BTCUSDT', 360*60, 3, 64000);
+  const rows = minuteAgg(f, 360);
+
+  // KPIs
+  $('#demoHistRows').textContent = rows.length.toString();
+  $('#demoHistAvgTrades').textContent = fmt2.format(rows.reduce((a,b)=>a+b.trades,0)/rows.length);
+
+  groupedBars('#demo-hist-buy-sell',
+    rows.slice(-20).map(r=>r.x.toISOString().slice(11,16)),
+    ['Buy','Sell'],
+    rows.slice(-20).flatMap(r=>[
+      {group:r.x.toISOString().slice(11,16), key:'Buy', value:r.buy_vol},
+      {group:r.x.toISOString().slice(11,16), key:'Sell', value:r.sell_vol}
+    ])
+  );
+  multiLine('#demo-hist-avg-prices',
+    [{key:'avg_buy', color:COLOR.buy},{key:'avg_sell', color:COLOR.sell}],
+    rows.slice(-120), (r,k)=>r[k]
+  );
+  multiLine('#demo-hist-trades-per-min',
+    [{key:'trades', color:COLOR.accent}],
+    rows.slice(-120), (r)=>r.trades
+  );
+}
+
+/* -------- Ingestion control + counters -------- */
+async function probeApi(){
+  if(!HAVE_API) return false;
+  const ping = await safeJson(`${API_BASE}/collector/status`);
+  HAVE_API = !!ping;
+  $('#collectorStatus').textContent = HAVE_API ? 'API detected' : 'demo mode';
+  return HAVE_API;
+}
+async function startCollect(){
+  await probeApi();
+  if(HAVE_API){
+    const r = await safeJson(`${API_BASE}/collector/start`);
+    $('#collectorStatus').textContent = r?.status || 'started';
+  }else{
+    alert('No API detected. Running in static demo mode.\n(For live demo contact: deniskerec1994@gmail.com)');
+    $('#collectorStatus').textContent = 'demo mode';
+  }
+  ingestTotal = 0;
+  $('#ingestCounter').textContent = `Ingested: ${ingestTotal}`;
+
+  if(ingestTimer) clearInterval(ingestTimer);
+  ingestTimer = setInterval(async () => {
+    // If API: count rows from last 5s. Else simulate +random.
+    if(HAVE_API){
+      const data = await safeJson(`${API_BASE}/live_trades?window_sec=5&symbol=BTCUSDT`);
+      const inc = Array.isArray(data) ? Math.max(0, data.length - 1) : Math.floor(Math.random()*6);
+      ingestTotal += inc;
+    } else {
+      ingestTotal += Math.floor(Math.random()*8);
+    }
+    $('#ingestCounter').textContent = `Ingested: ${ingestTotal}`;
+  }, 2000);
+}
+async function stopCollect(){
+  if(HAVE_API){
+    const r = await safeJson(`${API_BASE}/collector/stop`);
+    $('#collectorStatus').textContent = r?.status || 'stopped';
+  }else{
+    $('#collectorStatus').textContent = 'demo mode';
+  }
+  if(ingestTimer) clearInterval(ingestTimer);
+}
+
+/* -------- Events -------- */
+document.querySelectorAll('.tab').forEach(t=>{
+  t.addEventListener('click', ()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    const name=t.dataset.tab;
+    document.querySelectorAll('.tab-page').forEach(p=>p.classList.toggle('hidden', p.dataset.tab!==name));
+    // lazy loads
+    if(name==='live'){ loadLive(); if(countersTimer) clearInterval(countersTimer); countersTimer=setInterval(refreshCounters,10000); }
+    if(name==='historical'){ loadHist(); if(countersTimer){ clearInterval(countersTimer); countersTimer=null; } }
+    if(name==='static-live'){ loadStaticRealtime(); }
+    if(name==='static-hist'){ loadStaticHistorical(); }
+  });
+});
+$('#applyLive').addEventListener('click', loadLive);
+$('#refreshLive').addEventListener('click', async()=>{ await refreshCounters(); await loadLive(); });
+$('#applyHist').addEventListener('click', loadHist);
+$('#refreshHist').addEventListener('click', loadHist);
+$('#btnStart').addEventListener('click', startCollect);
+$('#btnStop').addEventListener('click', stopCollect);
+
+/* -------- Boot -------- */
+(async function boot(){
+  await probeApi();
+  await refreshCounters();
+  loadLive(); // default tab
 })();

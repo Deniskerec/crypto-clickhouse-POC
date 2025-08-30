@@ -2,49 +2,101 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>Crypto Realtime — ClickHouse</title>
+  <title>Crypto Realtime — ClickHouse POC</title>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <link rel="stylesheet" href="style.css"/>
   <script defer src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 
-  <!-- Change this to your API when running locally (or leave blank on GH Pages) -->
-  <script id="apiBase" type="text/plain">http://127.0.0.1:8000</script>
+  <!-- If you serve API locally, put http://127.0.0.1:8000 here.
+       For GitHub Pages demo, leave YOUR_API_BASE_HERE to force demo mode. -->
+  <!-- Auto API discovery + runtime override -->
+<script>
+  (function () {
+    const qs = new URLSearchParams(location.search);
+    const fromQuery = qs.get('api');                  // ?api=https://my-api.example.com
+    const saved = localStorage.getItem('apiBase');    // persisted choice
+    const candidates = [];
+
+    if (fromQuery) candidates.push(fromQuery);
+    if (saved && !candidates.includes(saved)) candidates.push(saved);
+
+    // same origin (for when the API is served from the same domain/path)
+    const sameOrigin = `${location.origin.replace(/\/$/, '')}`;
+    if (!candidates.includes(sameOrigin)) candidates.push(sameOrigin);
+
+    // local dev defaults
+    ['http://127.0.0.1:8000', 'http://localhost:8000'].forEach(u => {
+      if (!candidates.includes(u)) candidates.push(u);
+    });
+
+    // Expose promises for main.js
+    const probe = async (base) => {
+      const ctl = new AbortController();
+      const id = setTimeout(() => ctl.abort(), 1500); // 1.5s timeout
+      try {
+        const r = await fetch(`${base.replace(/\/$/, '')}/collector/status`, { signal: ctl.signal, mode: 'cors' });
+        clearTimeout(id);
+        if (r.ok) return base;
+      } catch (e) { /* ignore */ }
+      return null;
+    };
+
+    window.__apiBasePromise = (async () => {
+      for (const base of candidates) {
+        const ok = await probe(base);
+        if (ok) {
+          localStorage.setItem('apiBase', ok);
+          return ok;
+        }
+      }
+      // No API found → demo mode
+      return null;
+    })();
+  })();
+</script>
 </head>
 <body>
   <header>
-    <h1>Crypto Realtime — ClickHouse</h1>
+    <h1>Realtime ClickHouse Analytics — POC</h1>
     <div class="controls">
-      <span class="badge">Realtime ClickHouse Analytics — POC</span>
       <button id="btnStart">Start collecting</button>
       <button id="btnStop">Stop</button>
-      <span id="collectorStatus">…</span>
+      <span id="collectorStatus" class="badge">idle</span>
+      <span id="ingestCounter" class="badge badge-accent" title="Rows ingested since start">Ingested: 0</span>
     </div>
   </header>
 
   <div class="layout">
-    <!-- Side Filters -->
+    <!-- Sidebar (filters + counters) -->
     <aside class="sidebar">
+      <div class="site-tag">Realtime ClickHouse Analytics — POC</div>
+
       <h3>Filters</h3>
 
       <div class="section">
         <div class="section-title">Live (API)</div>
         <label>Window (sec)</label>
         <input id="liveWindow" type="number" min="10" value="60"/>
-        <label>Last N minutes (for Top & Buy/Sell)</label>
+        <label>Last N minutes (Top &amp; Buy/Sell)</label>
         <input id="liveMinutes" type="number" min="1" value="10"/>
         <label>Top symbols</label>
         <input id="liveTop" type="number" min="1" value="5"/>
 
         <label>Symbol for Raw Table</label>
         <select id="liveSymbol">
-          <option>BTCUSDT</option><option>ETHUSDT</option><option>BNBUSDT</option>
-          <option>SOLUSDT</option><option>ADAUSDT</option>
+          <option>BTCUSDT</option><option>ETHUSDT</option>
+          <option>BNBUSDT</option><option>SOLUSDT</option>
+          <option>ADAUSDT</option>
         </select>
 
-        <button id="applyLive">Apply (Live)</button>
+        <div class="btn-row">
+          <button id="applyLive">Apply</button>
+          <button id="refreshLive" class="ghost">Refresh</button>
+        </div>
+
         <div class="legend">
-          <div><span class="dot buy"></span> Buy = is_buyer_maker = 0</div>
-          <div><span class="dot sell"></span> Sell = is_buyer_maker = 1</div>
+          <div><span class="dot buy"></span> Buy (is_buyer_maker = 0)</div>
+          <div><span class="dot sell"></span> Sell (is_buyer_maker = 1)</div>
         </div>
       </div>
 
@@ -52,28 +104,39 @@
         <div class="section-title">Historical (API)</div>
         <label>Symbol</label>
         <select id="histSymbol">
-          <option>BTCUSDT</option><option>ETHUSDT</option><option>BNBUSDT</option>
-          <option>SOLUSDT</option><option>ADAUSDT</option>
+          <option>BTCUSDT</option><option>ETHUSDT</option>
+          <option>BNBUSDT</option><option>SOLUSDT</option>
+          <option>ADAUSDT</option>
         </select>
         <label>Lookback (minutes)</label>
         <input id="histMinutes" type="number" min="10" value="360"/>
-        <button id="applyHist">Apply (Historical)</button>
+
+        <div class="btn-row">
+          <button id="applyHist">Apply</button>
+          <button id="refreshHist" class="ghost">Refresh</button>
+        </div>
 
         <div class="small-note">Avg Buy/Sell are VWAPs per minute.</div>
       </div>
+
+      <div class="section">
+        <div class="section-title">Trades counters</div>
+        <div id="symbolCounters" class="counters"></div>
+        <div class="small-note">Updates on refresh or every ~10s while Live is visible.</div>
+      </div>
     </aside>
 
-    <!-- Main content -->
+    <!-- Main -->
     <main>
       <div class="tabs">
         <div class="tab active" data-tab="live">Live (API)</div>
         <div class="tab" data-tab="historical">Historical (API)</div>
-        <div class="tab" data-tab="static-rt">Static Realtime (demo)</div>
+        <div class="tab" data-tab="static-live">Static Realtime (demo)</div>
         <div class="tab" data-tab="static-hist">Static Historical (demo)</div>
         <div class="tab" data-tab="about">About / Static Site</div>
       </div>
 
-      <!-- Live Page (API) -->
+      <!-- Live -->
       <section class="tab-page" data-tab="live">
         <div class="card">
           <div class="card-head">
@@ -86,7 +149,7 @@
               <svg id="live-buy-sell"></svg>
             </div>
             <div class="chart-container">
-              <div class="legend">Avg Buy vs Avg Sell Price (VWAP)</div>
+              <div class="legend"><span class="buy">Avg Buy</span> vs <span class="sell">Avg Sell</span> Price (VWAP)</div>
               <svg id="live-avg-prices"></svg>
             </div>
             <div class="chart-container">
@@ -118,7 +181,7 @@
         </div>
       </section>
 
-      <!-- Historical Page (API) -->
+      <!-- Historical -->
       <section class="tab-page hidden" data-tab="historical">
         <div class="card">
           <div class="card-head">
@@ -126,14 +189,8 @@
             <button class="info" data-info="hist">i</button>
           </div>
           <div class="kpis">
-            <div class="kpi">
-              <div class="kpi-label">Rows (minutes)</div>
-              <div id="histRows" class="kpi-value">0</div>
-            </div>
-            <div class="kpi">
-              <div class="kpi-label">Avg Trades/min</div>
-              <div id="histAvgTrades" class="kpi-value">0</div>
-            </div>
+            <div class="kpi"><div class="kpi-label">Rows (minutes)</div><div id="histRows" class="kpi-value">0</div></div>
+            <div class="kpi"><div class="kpi-label">Avg Trades/min</div><div id="histAvgTrades" class="kpi-value">0</div></div>
           </div>
           <div class="charts">
             <div class="chart-container">
@@ -154,41 +211,25 @@
       </section>
 
       <!-- Static Realtime (demo) -->
-      <section class="tab-page hidden" data-tab="static-rt">
-        <div class="card">
-          <div class="card-head">
-            <h3>Static Realtime (demo) — Top Symbols (last 10 min)</h3>
-          </div>
-          <div class="charts">
-            <div class="chart-container">
-              <div class="legend"><span class="buy">Buy Volume</span> vs <span class="sell">Sell Volume</span></div>
-              <svg id="srt-buy-sell"></svg>
-            </div>
-            <div class="chart-container">
-              <div class="legend">Avg Buy vs Avg Sell Price (VWAP)</div>
-              <svg id="srt-avg-prices"></svg>
-            </div>
-            <div class="chart-container">
-              <div class="legend">Trades per minute (Top symbols)</div>
-              <svg id="srt-trades-per-min"></svg>
-            </div>
-          </div>
+      <section class="tab-page hidden" data-tab="static-live">
+        <div class="card callout">
+          <strong>Heads up:</strong> This is a static demo rendering realistic fake data.
+          For a live backend demo, contact <a href="mailto:deniskerec1994@gmail.com">deniskerec1994@gmail.com</a>.
         </div>
-
         <div class="card">
-          <div class="card-head">
-            <h3>Static Realtime (demo) — Last Trades (60s) — BTCUSDT</h3>
+          <div class="card-head"><h3>Top Symbols — Buy vs Sell (demo)</h3></div>
+          <div class="charts">
+            <div class="chart-container"><svg id="demo-live-buy-sell"></svg></div>
+            <div class="chart-container"><svg id="demo-live-avg-prices"></svg></div>
+            <div class="chart-container"><svg id="demo-live-trades-per-min"></svg></div>
           </div>
           <div class="table-wrap">
-            <table id="srtTable">
+            <table id="demo-live-table">
               <thead>
-              <tr>
-                <th>Time (UTC)</th>
-                <th>Symbol</th>
-                <th class="right">Price</th>
-                <th class="right">Qty</th>
-                <th>Side</th>
-              </tr>
+                <tr>
+                  <th>Time (UTC)</th><th>Symbol</th>
+                  <th class="right">Price</th><th class="right">Qty</th><th>Side</th>
+                </tr>
               </thead>
               <tbody></tbody>
             </table>
@@ -198,33 +239,18 @@
 
       <!-- Static Historical (demo) -->
       <section class="tab-page hidden" data-tab="static-hist">
+        <div class="card callout">
+          <strong>Heads up:</strong> Static, fake but realistic OHLCV and VWAPs for showcase.
+        </div>
         <div class="card">
-          <div class="card-head">
-            <h3>Static Historical (demo) — BTCUSDT (last 360 min)</h3>
-          </div>
           <div class="kpis">
-            <div class="kpi">
-              <div class="kpi-label">Rows (minutes)</div>
-              <div id="shRows" class="kpi-value">0</div>
-            </div>
-            <div class="kpi">
-              <div class="kpi-label">Avg Trades/min</div>
-              <div id="shAvgTrades" class="kpi-value">0</div>
-            </div>
+            <div class="kpi"><div class="kpi-label">Rows (minutes)</div><div id="demoHistRows" class="kpi-value">0</div></div>
+            <div class="kpi"><div class="kpi-label">Avg Trades/min</div><div id="demoHistAvgTrades" class="kpi-value">0</div></div>
           </div>
           <div class="charts">
-            <div class="chart-container">
-              <div class="legend"><span class="buy">Buy Volume</span> vs <span class="sell">Sell Volume</span></div>
-              <svg id="sh-buy-sell"></svg>
-            </div>
-            <div class="chart-container">
-              <div class="legend">Avg Price — <span class="buy">Buy VWAP</span> vs <span class="sell">Sell VWAP</span></div>
-              <svg id="sh-avg-prices"></svg>
-            </div>
-            <div class="chart-container">
-              <div class="legend">Trades per minute</div>
-              <svg id="sh-trades-per-min"></svg>
-            </div>
+            <div class="chart-container"><svg id="demo-hist-buy-sell"></svg></div>
+            <div class="chart-container"><svg id="demo-hist-avg-prices"></svg></div>
+            <div class="chart-container"><svg id="demo-hist-trades-per-min"></svg></div>
           </div>
         </div>
       </section>
@@ -232,38 +258,18 @@
       <!-- About -->
       <section class="tab-page hidden" data-tab="about">
         <div class="card">
-          <h3>This is just a static site</h3>
+          <h3>About this static site</h3>
           <p>
-            This page showcases a ClickHouse realtime analytics POC. The two “Static” tabs render demo
-            data so the site works on GitHub Pages without a backend. The “Live (API)” and
-            “Historical (API)” tabs call a FastAPI service that streams Binance trades into ClickHouse.
+            This is a static preview of a realtime analytics dashboard built on ClickHouse.
+            It can run fully with a live API (FastAPI) or fall back to demo data if the API is not present.
           </p>
           <p>
-            If you’d like to see the real system running or discuss how it works, contact:
-            <a href="mailto:deniskerec1994@gmail.com">deniskerec1994@gmail.com</a>
+            Want to see it connected to a real ClickHouse Cloud backend with live Binance trades and
+            streaming materialized views? Ping <a href="mailto:deniskerec1994@gmail.com">deniskerec1994@gmail.com</a>.
           </p>
         </div>
       </section>
     </main>
-  </div>
-
-  <!-- Simple modal for Live warning -->
-  <div id="modal" class="modal hidden">
-    <div class="modal-box">
-      <h3>Live backend required</h3>
-      <p>
-        The “Live (API)” views need the FastAPI service and ClickHouse to be running.
-        This static site is for demo only.
-      </p>
-      <p>
-        Interested in a live walkthrough or hosting this for you?
-        <b>deniskerec1994@gmail.com</b>
-      </p>
-      <div class="modal-actions">
-        <button id="modalClose">Close</button>
-        <button id="modalTry">Try anyway</button>
-      </div>
-    </div>
   </div>
 
   <script src="main.js"></script>

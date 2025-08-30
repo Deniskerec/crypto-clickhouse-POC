@@ -1,6 +1,7 @@
 :root{
   --bg:#0b0f17; --panel:#0f1624; --fg:#e8eef7; --muted:#9bb0c9; --grid:#1a2332;
-  --up:#2ecc71; --down:#e74c3c; --accent:#4da3ff; --warn:#ffd166; --buy:#2ecc71; --sell:#e74c3c;
+  --up:#2ecc71; --down:#e74c3c; --accent:#4da3ff; --warn:#ffd166;
+  --buy:#2ecc71; --sell:#e74c3c;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -11,13 +12,12 @@ select,button,input{
   background:var(--panel);color:var(--fg);border:1px solid var(--grid);border-radius:8px;padding:6px 10px
 }
 button{cursor:pointer}
+button.ghost{opacity:.8}
 
-.badge{
-  border:1px solid var(--grid); padding:4px 8px; border-radius:999px;
-  color:var(--muted); font-size:12px; background:#0e1421;
-}
+.badge{padding:4px 8px;border:1px solid var(--grid);border-radius:999px;background:#0e1421;color:var(--muted);font-size:12px}
+.badge-accent{color:#fff;border-color:#2b68b9;background:#143058}
 
-.layout{display:grid;grid-template-columns:280px 1fr;gap:14px;max-width:1400px;margin:0 auto;padding:14px}
+.layout{display:grid;grid-template-columns:300px 1fr;gap:14px;max-width:1400px;margin:0 auto;padding:14px}
 .sidebar{background:var(--panel);border:1px solid var(--grid);border-radius:12px;padding:12px;height:max-content;position:sticky;top:10px}
 .sidebar h3{margin:6px 0 12px 0}
 .section{border-top:1px dashed var(--grid);padding-top:10px;margin-top:8px}
@@ -25,11 +25,16 @@ button{cursor:pointer}
 .sidebar label{display:block;margin-top:8px;color:var(--muted);font-size:12px}
 .sidebar .small-note{color:var(--muted);font-size:12px;margin-top:8px}
 .legend{color:var(--muted);font-size:12px;margin:8px 0}
-.legend .buy{color:var(--buy)}
-.legend .sell{color:var(--sell)}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;border:1px solid var(--grid)}
 .dot.buy{background:var(--buy)}
 .dot.sell{background:var(--sell)}
+.btn-row{display:flex;gap:8px;margin-top:8px}
+.site-tag{font-size:12px;color:var(--muted);margin-bottom:8px}
+
+.counters{display:grid;grid-template-columns:1fr;gap:6px}
+.counter-item{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--grid);border-radius:10px;padding:6px 8px;background:#0e1421}
+.counter-item .label{color:var(--muted)}
+.counter-item .value{font-weight:600}
 
 .tabs{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--grid);justify-content:center}
 .tab{background:var(--panel);border:1px solid var(--grid);padding:6px 10px;border-radius:8px;cursor:pointer}
@@ -41,16 +46,13 @@ main{padding:0 6px}
 .card-head{display:flex;align-items:center;justify-content:space-between}
 .info{width:24px;height:24px;border-radius:50%;border:1px solid var(--grid);background:var(--panel);color:var(--muted);cursor:pointer}
 
+.callout{border-left:4px solid var(--accent)}
+
 .charts{display:flex;flex-direction:column;gap:18px;max-width:1000px;margin:0 auto}
 .chart-container{background:#0e1421;border:1px solid var(--grid);border-radius:10px;padding:10px}
 svg{width:100%;height:420px;background:#0f1624;border:1px solid var(--grid);border-radius:10px}
 .axis text{fill:var(--muted);font-size:11px}
 .axis path,.axis line{stroke:var(--grid)}
-.gridlines line{stroke:var(--grid);stroke-dasharray:2,2}
-.bar{fill:var(--accent)}
-.warnFill{fill:var(--warn)}
-.buyFill{fill:var(--buy)}
-.sellFill{fill:var(--sell)}
 
 .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:8px 0}
 .kpi{border:1px solid var(--grid);border-radius:10px;padding:8px 10px;background:#0e1421}
@@ -67,9 +69,3 @@ th.right,td.right{text-align:right}
   .layout{grid-template-columns:1fr}
   .sidebar{position:static;order:2}
 }
-
-/* Simple modal */
-.modal.hidden{display:none}
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:999}
-.modal-box{background:var(--panel);border:1px solid var(--grid);border-radius:12px;padding:16px;max-width:520px}
-.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
