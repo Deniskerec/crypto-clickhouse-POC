@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Crypto Realtime — ClickHouse</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <link rel="stylesheet" href="style.css"/>
+  <script defer src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script id="apiBase" type="text/plain">http://127.0.0.1:8000</script>
+</head>
+<body>
+  <header>
+    <h1>Crypto Realtime — ClickHouse</h1>
+    <div class="controls">
+      <button id="btnStart">Start collecting</button>
+      <button id="btnStop">Stop</button>
+      <span id="collectorStatus">…</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- Side Filters -->
+    <aside class="sidebar">
+      <h3>Filters</h3>
+
+      <div class="section">
+        <div class="section-title">Live</div>
+        <label>Window (sec)</label>
+        <input id="liveWindow" type="number" min="10" value="60"/>
+        <label>Last N minutes (for Top & Buy/Sell)</label>
+        <input id="liveMinutes" type="number" min="1" value="10"/>
+        <label>Top symbols</label>
+        <input id="liveTop" type="number" min="1" value="5"/>
+
+        <label>Symbol for Raw Table</label>
+        <select id="liveSymbol">
+          <option>BTCUSDT</option>
+          <option>ETHUSDT</option>
+          <option>BNBUSDT</option>
+          <option>SOLUSDT</option>
+          <option>ADAUSDT</option>
+        </select>
+
+        <button id="applyLive">Apply (Live)</button>
+        <div class="legend">
+          <div><span class="dot buy"></span> Buy = is_buyer_maker = 0</div>
+          <div><span class="dot sell"></span> Sell = is_buyer_maker = 1</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Historical</div>
+        <label>Symbol</label>
+        <select id="histSymbol">
+          <option>BTCUSDT</option>
+          <option>ETHUSDT</option>
+          <option>BNBUSDT</option>
+          <option>SOLUSDT</option>
+          <option>ADAUSDT</option>
+        </select>
+        <label>Lookback (minutes)</label>
+        <input id="histMinutes" type="number" min="10" value="360"/>
+        <button id="applyHist">Apply (Historical)</button>
+
+        <div class="small-note">Avg Buy/Sell are VWAPs per minute.</div>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main>
+      <div class="tabs">
+        <div class="tab active" data-tab="live">Live</div>
+        <div class="tab" data-tab="historical">Historical</div>
+      </div>
+
+      <!-- Live Page -->
+      <section class="tab-page" data-tab="live">
+        <div class="card">
+          <div class="card-head">
+            <h3>Top Symbols — Buy vs Sell (last <span id="liveMinLabel">10</span> min)</h3>
+            <button class="info" data-info="live">i</button>
+          </div>
+          <div class="charts">
+            <div class="chart-container">
+              <div class="legend"><span class="buy">Buy Volume</span> vs <span class="sell">Sell Volume</span></div>
+              <svg id="live-buy-sell"></svg>
+            </div>
+            <div class="chart-container">
+              <div class="legend">Avg Buy vs Avg Sell Price (VWAP)</div>
+              <svg id="live-avg-prices"></svg>
+            </div>
+            <div class="chart-container">
+              <div class="legend">Trades per minute (Top symbols)</div>
+              <svg id="live-trades-per-min"></svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Last Trades (rolling <span id="liveWindowLabel">60</span>s) — <span id="liveSymbolLabel">BTCUSDT</span></h3>
+            <span id="statusLive">…</span>
+          </div>
+          <div class="table-wrap">
+            <table id="liveTable">
+              <thead>
+                <tr>
+                  <th>Time (UTC)</th>
+                  <th>Symbol</th>
+                  <th class="right">Price</th>
+                  <th class="right">Qty</th>
+                  <th>Side</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Historical Page -->
+      <section class="tab-page hidden" data-tab="historical">
+        <div class="card">
+          <div class="card-head">
+            <h3>Historical — <span id="histSymbolLabel">BTCUSDT</span> (last <span id="histMinLabel">360</span> min)</h3>
+            <button class="info" data-info="hist">i</button>
+          </div>
+          <div class="kpis">
+            <div class="kpi">
+              <div class="kpi-label">Rows (minutes)</div>
+              <div id="histRows" class="kpi-value">0</div>
+            </div>
+            <div class="kpi">
+              <div class="kpi-label">Avg Trades/min</div>
+              <div id="histAvgTrades" class="kpi-value">0</div>
+            </div>
+          </div>
+          <div class="charts">
+            <div class="chart-container">
+              <div class="legend"><span class="buy">Buy Volume</span> vs <span class="sell">Sell Volume</span></div>
+              <svg id="hist-buy-sell"></svg>
+            </div>
+            <div class="chart-container">
+              <div class="legend">Avg Price — <span class="buy">Buy VWAP</span> vs <span class="sell">Sell VWAP</span></div>
+              <svg id="hist-avg-prices"></svg>
+            </div>
+            <div class="chart-container">
+              <div class="legend">Trades per minute</div>
+              <svg id="hist-trades-per-min"></svg>
+            </div>
+          </div>
+          <div id="statusHist" class="small-note">…</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

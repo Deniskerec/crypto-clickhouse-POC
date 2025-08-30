@@ -1,0 +1,37 @@
+binance-clickhouse/
+├─ .env                          # CH creds + app settings (not in git)
+├─ .gitignore
+├─ README.md
+├─ requirements.txt              # Python deps (ETL + API)
+│
+├─ sql/                          # Schema migrations (raw .sql)
+│  ├─ V1__create_trades_table.sql
+│  └─ V2__create_trades_1m_view.sql
+│
+├─ src/                          # Python code
+│  ├─ db.py                      # ClickHouse client (reads .env)
+│  ├─ migrate.py                 # Simple migration runner (applies sql/*.sql)
+│  ├─ stream_binance.py          # Binance WS → buffer → ClickHouse inserts
+│  └─ queries.sql                # Handy SQL for verification
+│
+├─ api/                          # Backend API (serves JSON to the web)
+│  └─ server.py                  # FastAPI endpoints: /health, /top_symbols, /ohlcv
+│
+└─ web/                          # Static site (GitHub Pages friendly)
+   ├─ index.html                 # D3.js UI (OHLCV chart + controls)
+   ├─ main.js                    # Fetch API JSON, draw chart, auto-refresh
+   └─ style.css                  # Minimal dark theme
+
+   --  src/migrate.py — tiny Python migration runner
+	•	Applies files in sql/ named V{number}__desc.sql in numeric order.
+	•	Records applied migrations (version, filename, checksum, applied_at) in crypto._migrations.
+	•	Refuses to re-apply or to proceed if a previously applied file’s content changed (checksum mismatch).
+
+
+
+
+	1.	python src/migrate.py (once, setup tables)
+	2.	python src/stream_binance.py (background)
+	3.	uvicorn api.server:app --port 8000 (backend API)
+	4.	python -m http.server 8080 inside /web (frontend site)
+
