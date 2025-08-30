@@ -132,8 +132,8 @@
         <div class="tab" data-tab="live">Live (API)</div>
         <div class="tab" data-tab="historical">Historical (API)</div>
         <div class="tab" data-tab="static-live">Static Realtime (demo)</div>
-        <div class="tab active" data-tab="static-hist">Static Historical (demo)</div>
-        <div class="tab" data-tab="about">About / Static Site</div>
+        <div class="tab" data-tab="static-hist">Static Historical (demo)</div>
+        <div class="tab active" data-tab="about">About / Static Site</div>
       </div>
 
       <!-- Live -->
@@ -255,17 +255,30 @@
         </div>
       </section>
 
-      <!-- About -->
+<!-- About -->
       <section class="tab-page hidden" data-tab="about">
         <div class="card">
-          <h3>About this static site</h3>
+          <h3>About this project</h3>
           <p>
-            This is a static preview of a realtime analytics dashboard built on ClickHouse.
-            It can run fully with a live API (FastAPI) or fall back to demo data if the API is not present.
+            This site is a <strong>proof-of-concept (POC)</strong> for realtime analytics with
+            <strong>ClickHouse</strong>. It simulates a crypto trading dashboard where millions of trades
+            can be ingested, aggregated, and visualized with sub-second latency.
           </p>
           <p>
-            Want to see it connected to a real ClickHouse Cloud backend with live Binance trades and
-            streaming materialized views? Ping <a href="mailto:deniskerec1994@gmail.com">deniskerec1994@gmail.com</a>.
+            You can explore two <strong>static demo modes</strong> (with realistic fake data):
+          </p>
+          <div style="margin:12px 0; display:flex; gap:12px; flex-wrap:wrap;">
+            <a class="btn" href="#" onclick="document.querySelector('[data-tab=\'static-live\']').click()">Static Realtime</a>
+            <a class="btn" href="#" onclick="document.querySelector('[data-tab=\'static-hist\']').click()">Static Historical</a>
+          </div>
+          <p>
+            If you want to see the full <strong>live version</strong> (Binance → FastAPI → ClickHouse → D3.js)
+            with actual trades flowing in, reach out at
+            <a href="mailto:deniskerec1994@gmail.com">deniskerec1994@gmail.com</a>.
+          </p>
+          <p class="small-note">
+            Under the hood: Binance WebSocket ingestion, batched inserts to ClickHouse,
+            and visualizations with D3.js. Can run on-premise or cloud (ClickHouse Cloud, AWS, etc.).
           </p>
         </div>
       </section>
